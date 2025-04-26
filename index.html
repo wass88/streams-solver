@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Streams EV Solver</title>
+
+  
+
+  <!-- 2️⃣ Alpine.js は後で実行されるので streamsEV は既に存在 -->
+  
+
+  <style>
+    :root { --cell:56px; --gap:4px; font-family:system-ui,sans-serif; }
+    body  { margin:0; padding:1rem; display:flex; flex-direction:column; gap:1rem; max-width:480px; margin-inline:auto; }
+    #board { display:grid; grid-template-columns:repeat(5,var(--cell)); gap:var(--gap); }
+    .cell { width:var(--cell); height:var(--cell); display:flex; align-items:center; justify-content:center; font-size:1.1rem; border:1px solid #888; border-radius:6px; background:#fafafa; line-height:1.1; user-select:none; }
+    .evCell { background:#eef; cursor:pointer; }
+    #cards { display:flex; flex-wrap:wrap; gap:6px; }
+    .card { min-width:48px; padding:6px 0; text-align:center; border:1px solid #888; border-radius:6px; background:#fff; flex:1 0 18%; cursor:pointer; user-select:none; }
+    .selected { background:#ffc; }
+    #ev-result { font-size:1.2rem; font-weight:600; text-align:center; }
+    @media (hover:hover){ .evCell:hover{background:#cfe;} .card:hover{background:#eee;} }
+  </style>
+</head>
+<body>
+  <!-- Alpine.js アプリ -------------------------------------------------->
+  <div x-data="streamApp()" x-init="init()" class="app w-full">
+    <div id="ev-result" x-text="ev"></div>
+
+    <!-- 盤面 -->
+    <div id="board">
+      <template x-for="(cell, i) in board" :key="i">
+        <div
+          :class="selectCard ? (cell === null ? 'cell evCell' : 'cell') : 'cell'"
+          x-text="selectCard && evArr ? (cell === null ? evArr[i].toFixed(1) : cell) : (cell ?? '')"
+          @click="selectCard && cell === null && placeCard(i)">
+        </div>
+      </template>
+    </div>
+
+    <!-- カードパレット -->
+    <div id="cards">
+      <template x-for="(count, card) in cardCounts" :key="card">
+        <div
+          :class="'card' + (selectCard == card ? ' selected' : '')"
+          @click="toggleCard(card)"
+          x-text="(card === '★' ? '★' : card) + (count > 1 ? '×' + count : '')">
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- アプリロジック ----------------------------------------------------->
+  <script>
+    (function(){
+      // --- 完全山札生成
+      function buildFullDeck(){
+        const d=[];
+        for(let n=1;n<=30;n++){
+          const c=(n>=11&&n<=19)?2:1;
+          for(let i=0;i<c;i++) d.push(n);
+        }
+        d.push('★');
+        return d;
+      }
+
+      // --- Alpine コンポーネントファクトリ
+      window.streamApp = function(){
+        return {
+          /* state */
+          SIMS: 1000,
+          board: Array(20).fill(null),
+          deck: buildFullDeck(),
+          selectCard: null,
+          ev: '--',
+          evArr: null,
+
+          /* computed */
+          get cardCounts(){
+            return this.deck.reduce((m,c)=>{ m[c]=(m[c]||0)+1; return m; }, {});
+          },
+
+          /* helpers */
+          encode(v){ return v===null?'_': v==='★'?'★': v<=9?String(v): String.fromCharCode(55+v); },
+          boardStr(){ return this.board.map(v=>this.encode(v)).join(''); },
+          removeOne(arr,val){ const i=arr.indexOf(val); if(i>=0) arr.splice(i,1); },
+
+          /* lifecycle */
+          async init(){ await this.updateCurrentEV(); },
+
+          /* actions */
+          async updateCurrentEV(){
+            this.ev = '計算中…';
+            this.evArr = null;
+            await this.$nextTick();
+            const v = streamsEV.expected_value_current_board(this.boardStr(), this.SIMS);
+            this.ev = `EV: ${v.toFixed(2)}`;
+          },
+          async startCardSelection(card){
+            this.selectCard = card;
+            this.ev = '計算中…';
+            this.evArr = null;
+            await this.$nextTick();
+            const arr = await streamsEV.expected_values_after_card(this.boardStr(), Number(card), this.SIMS);
+            this.evArr = Array.from(arr);
+            this.ev = `カード ${card} を置く期待値`;
+          },
+          placeCard(idx){
+            this.board[idx] = (this.selectCard==='★') ? '★' : Number(this.selectCard);
+            this.removeOne(this.deck, this.selectCard==='★' ? '★' : Number(this.selectCard));
+            this.selectCard = null;
+            this.evArr = null;
+            this.updateCurrentEV();
+          },
+          toggleCard(card){
+            if(this.selectCard == card){
+              this.selectCard = null;
+              this.evArr = null;
+              this.updateCurrentEV();
+            } else {
+              this.startCardSelection(card);
+            }
+          }
+        };
+      };
+    })();
+  </script>
+  <!-- 🌟 Unified bootstrap: WASM → streamApp → Alpine ---------------------------------->
+  <script type="module">
+    /* ----- 1. Load WASM + expose streamsEV ----- */
+    import init, { expected_value_current_board, expected_values_after_card } from "./pkg/streams_solver.js";
+    await init();
+    window.streamsEV = { expected_value_current_board, expected_values_after_card };
+
+    /* ----- 2. Utility: full deck builder ----- */
+    function buildFullDeck(){
+      const d=[]; for(let n=1;n<=30;n++){ const c=(n>=11&&n<=19)?2:1; for(let i=0;i<c;i++) d.push(n);} d.push('★'); return d; }
+
+    /* ----- 3. Alpine component factory ----- */
+    window.streamApp = function(){
+      return {
+        SIMS: 1000,
+        board: Array(20).fill(null),
+        deck: buildFullDeck(),
+        selectCard: null,
+        ev: '--',
+        evArr: null,
+        get cardCounts(){ return this.deck.reduce((m,c)=>(m[c]=(m[c]||0)+1,m),{}); },
+        encode(v){ return v===null?'_': v==='★'?'★': v<=9?String(v): String.fromCharCode(55+v); },
+        boardStr(){ return this.board.map(v=>this.encode(v)).join(''); },
+        removeOne(arr,val){ const i=arr.indexOf(val); if(i>=0) arr.splice(i,1); },
+        async init(){ await this.updateCurrentEV(); },
+        async updateCurrentEV(){ this.ev='計算中…'; this.evArr=null; await this.$nextTick(); const v=streamsEV.expected_value_current_board(this.boardStr(),this.SIMS); this.ev=`EV: ${v.toFixed(2)}`; },
+        async startCardSelection(card){ this.selectCard=card; this.ev='計算中…'; this.evArr=null; await this.$nextTick(); const arr=await streamsEV.expected_values_after_card(this.boardStr(),Number(card),this.SIMS); this.evArr=Array.from(arr); this.ev=`カード ${card} を置く期待値`; },
+        placeCard(idx){ this.board[idx]=(this.selectCard==='★')?'★':Number(this.selectCard); this.removeOne(this.deck,this.selectCard==='★'?'★':Number(this.selectCard)); this.selectCard=null; this.evArr=null; this.updateCurrentEV(); },
+        toggleCard(card){ if(this.selectCard==card){ this.selectCard=null; this.evArr=null; this.updateCurrentEV(); } else { this.startCardSelection(card);} }
+      };
+    };
+
+    /* ----- 4. Dynamically load Alpine (ESM) and start ----- */
+    import Alpine from 'https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/module.esm.js';
+    window.Alpine = Alpine;
+    Alpine.start();
+  </script>
+</body>
+</html>
